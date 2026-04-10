@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<!--
+  Firebase Web App to control ESP32 GPIO outputs.
+  This version has been modified to control a larger set of GPIOs using
+  the pins specified by the user. For each GPIO there is a card with
+  ON/OFF buttons and a state display. Authentication is handled via
+  Firebase Authentication; adjust the firebaseConfig object in app.js
+  with your own credentials.
+-->
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ESP IoT Firebase App</title>
+    <!-- FontAwesome icons -->
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
+    <!-- Favicon (place a file named favicon.png alongside this file if desired) -->
+    <link rel="icon" type="image/png" href="favicon.png">
+    <!-- External stylesheet -->
+    <link rel="stylesheet" type="text/css" href="styles.css">
+  </head>
+  <body>
+    <!-- Top navigation bar -->
+    <div class="topnav">
+      <h1>Ruhul Automation<i class="fas fa-lightbulb"></i></h1>
+    </div>
+    <!-- Authentication bar shown when a user is logged in -->
+    <div id="authentication-bar" style="display: none;">
+      <p>
+        <span id="authentication-status">User logged in</span>
+        <span id="user-details">USEREMAIL</span>
+        <a href="#" id="logout-link">(logout)</a>
+      </p>
+    </div>
+    <!-- Login form hidden by default; displayed when not authenticated -->
+    <!-- Show the login form by default. The script will hide it once the user is
+         authenticated. If the script fails to load, the login form remains visible
+         so that control actions cannot be accessed without logging in. -->
+    <form id="login-form" style="display: block;">
+      <div class="form-elements-container">
+        <label for="input-email"><b>Email</b></label>
+        <input type="text" placeholder="Enter Username" id="input-email" required>
+        <label for="input-password"><b>Password</b></label>
+        <input type="password" placeholder="Enter Password" id="input-password" required>
+        <button type="submit" id="login-button">Login</button>
+        <p id="error-message" style="color:red;"></p>
+      </div>
+    </form>
+    <!-- Content visible after authentication -->
+    <div class="content-sign-in" id="content-sign-in" style="display: none;">
+      <div class="card-grid">
+        <!--
+          Cards for each GPIO pin. The pins array in app.js defines the
+          order of the pins; the card IDs follow a sequential numbering
+          scheme (state1, btn1On, btn1Off, etc.) so the JavaScript can
+          locate and update them easily. If you change the order or add
+          new pins, update both the HTML and the pins array in app.js.
+        -->
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 15</p>
+          <p>
+            <button class="toggle-button off" id="btn1">OFF</button>
+          </p>
+          <p class="state">State:<span id="state1"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 2</p>
+          <p>
+            <button class="toggle-button off" id="btn2">OFF</button>
+          </p>
+          <p class="state">State:<span id="state2"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 4</p>
+          <p>
+            <button class="toggle-button off" id="btn3">OFF</button>
+          </p>
+          <p class="state">State:<span id="state3"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 16</p>
+          <p>
+            <button class="toggle-button off" id="btn4">OFF</button>
+          </p>
+          <p class="state">State:<span id="state4"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 17</p>
+          <p>
+            <button class="toggle-button off" id="btn5">OFF</button>
+          </p>
+          <p class="state">State:<span id="state5"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 5</p>
+          <p>
+            <button class="toggle-button off" id="btn6">OFF</button>
+          </p>
+          <p class="state">State:<span id="state6"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 18</p>
+          <p>
+            <button class="toggle-button off" id="btn7">OFF</button>
+          </p>
+          <p class="state">State:<span id="state7"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 19</p>
+          <p>
+            <button class="toggle-button off" id="btn8">OFF</button>
+          </p>
+          <p class="state">State:<span id="state8"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 21</p>
+          <p>
+            <button class="toggle-button off" id="btn9">OFF</button>
+          </p>
+          <p class="state">State:<span id="state9"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 22</p>
+          <p>
+            <button class="toggle-button off" id="btn10">OFF</button>
+          </p>
+          <p class="state">State:<span id="state10"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 23</p>
+          <p>
+            <button class="toggle-button off" id="btn11">OFF</button>
+          </p>
+          <p class="state">State:<span id="state11"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 13</p>
+          <p>
+            <button class="toggle-button off" id="btn12">OFF</button>
+          </p>
+          <p class="state">State:<span id="state12"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 12</p>
+          <p>
+            <button class="toggle-button off" id="btn13">OFF</button>
+          </p>
+          <p class="state">State:<span id="state13"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 14</p>
+          <p>
+            <button class="toggle-button off" id="btn14">OFF</button>
+          </p>
+          <p class="state">State:<span id="state14"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 27</p>
+          <p>
+            <button class="toggle-button off" id="btn15">OFF</button>
+          </p>
+          <p class="state">State:<span id="state15"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 26</p>
+          <p>
+            <button class="toggle-button off" id="btn16">OFF</button>
+          </p>
+          <p class="state">State:<span id="state16"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 25</p>
+          <p>
+            <button class="toggle-button off" id="btn17">OFF</button>
+          </p>
+          <p class="state">State:<span id="state17"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 33</p>
+          <p>
+            <button class="toggle-button off" id="btn18">OFF</button>
+          </p>
+          <p class="state">State:<span id="state18"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"><i class="fas fa-lightbulb"></i> GPIO 32</p>
+          <p>
+            <button class="toggle-button off" id="btn19">OFF</button>
+          </p>
+          <p class="state">State:<span id="state19"></span></p>
+        </div>
+      </div>
+      <!-- Reset all button below the grid -->
+      <div style="margin-top: 20px;">
+        <button id="reset-button">Reset All</button>
+      </div>
+
+      <!-- WiFi configuration UI.  The Change WiFi Settings button toggles
+           display of the configuration form.  The form contains inputs
+           for primary and secondary SSID and password and buttons to
+           save or cancel.  Styling is kept minimal; see styles.css for
+           generic input and button styling. -->
+      <div id="wifi-config-container" style="margin-top: 20px;">
+        <button id="wifi-config-button">Change WiFi Settings</button>
+        <div id="wifi-config" style="display: none; margin-top: 10px;">
+          <div>
+            <input type="text" id="wifi-ssid1" placeholder="Primary SSID">
+          </div>
+          <div>
+            <input type="password" id="wifi-pass1" placeholder="Primary Password">
+          </div>
+          <div>
+            <input type="text" id="wifi-ssid2" placeholder="Secondary SSID">
+          </div>
+          <div>
+            <input type="password" id="wifi-pass2" placeholder="Secondary Password">
+          </div>
+          <div style="margin-top: 10px;">
+            <button id="wifi-save-button">Save WiFi Credentials</button>
+            <button id="wifi-cancel-button">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hardware reboot button.  Clicking this sends a command to the
+           database instructing the ESP32 to perform a full reset. -->
+      <div style="margin-top: 20px;">
+        <button id="reboot-button">Restart ESP32</button>
+      </div>
+    </div>
+    <!-- Main JavaScript module that wires up Firebase and the UI. -->
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

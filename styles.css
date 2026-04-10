@@ -1,0 +1,120 @@
+/*
+  Basic styling for the Firebase ESP GPIO control web app.  This file is
+  derived from the original Random Nerd Tutorials example and has been
+  left mostly unchanged. The only notable tweak is increasing the
+  maximum width of the card grid to accommodate more GPIO cards on
+  larger screens. The layout uses a responsive CSS grid that wraps
+  cards automatically when the viewport is too narrow.
+*/
+
+html {
+  font-family: Verdana, Geneva, Tahoma, sans-serif;
+  display: inline-block;
+  text-align: center;
+}
+h1 {
+  font-size: 1.8rem;
+  color: white;
+}
+.topnav {
+  overflow: hidden;
+  background-color: #049faa;
+  color: white;
+  font-size: 1rem;
+  padding: 10px;
+}
+#authentication-bar {
+  background-color: mintcream;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+#user-details {
+  color: cadetblue;
+}
+.content {
+  padding: 20px;
+}
+body {
+  margin: 0;
+}
+.card-grid {
+  /* Increase max-width so more cards fit on larger displays */
+  max-width: 1200px;
+  margin: 0 auto;
+  display: grid;
+  grid-gap: 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+.card {
+  background-color: white;
+  box-shadow: 2px 2px 12px 1px rgba(140, 140, 140, 0.5);
+  border-radius: 8px;
+  padding: 1rem;
+}
+.card-title {
+  font-size: 1.2rem;
+  color: #034078;
+}
+.state {
+  color: #1282A2;
+}
+button {
+  background-color: #049faa;
+  color: white;
+  padding: 14px 20px;
+  margin: 8px 0;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.toggle-button {
+  color: white;
+  padding: 14px 20px;
+  margin: 8px 0;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+  width: 100%;
+  font-size: 1rem;
+}
+.toggle-button.on {
+  /* Green when the GPIO is ON */
+  background-color: #008000;
+}
+.toggle-button.off {
+  /* Red when the GPIO is OFF */
+  background-color: #b00020;
+}
+
+/* Yellow when the command is pending */
+.toggle-button.pending {
+  background-color: #f0ad4e;
+}
+.toggle-button:hover {
+  opacity: 0.9;
+}
+.button-on {
+  background-color: #034078;
+}
+.button-on:hover {
+  background-color: #1282A2;
+}
+.button-off {
+  background-color: #858585;
+}
+.button-off:hover {
+  background-color: #252524;
+}
+.form-elements-container {
+  padding: 16px;
+  width: 250px;
+  margin: 0 auto;
+}
+input[type="text"], input[type="password"] {
+  width: 100%;
+  padding: 12px 20px;
+  margin: 8px 0;
+  display: inline-block;
+  border: 1px solid #ccc;
+  box-sizing: border-box;
+}
