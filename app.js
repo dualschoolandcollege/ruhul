@@ -87,6 +87,29 @@ document.addEventListener('DOMContentLoaded', () => {
   // status update arrives from Firebase.
   const pending = [];
 
+  // Desired states for each GPIO.  While currentStates reflects the
+  // state reported by the device, desiredStates records what the user
+  // intends each output to be.  When a user clicks rapidly, the
+  // desired state may change multiple times before the ESP32 reports
+  // an update.  We use this array to avoid sending intermediate
+  // commands that will be immediately superseded, improving
+  // responsiveness when toggling quickly.
+  const desiredStates = [];
+
+  // Debounce timers for each GPIO.  When a user clicks a button we
+  // schedule a command to write the desired state after a short
+  // delay.  If another click occurs before the timer fires, the
+  // previous timer is cancelled and a new one is scheduled.  This
+  // coalesces multiple rapid toggles into a single database write.
+  const debounceTimers = [];
+
+  // Interval (in milliseconds) used for debouncing GPIO commands.
+  // Commands triggered by button clicks will be delayed by this
+  // amount.  If another click occurs during the delay, the timer
+  // resets.  A modest value (200ms) prevents spamming the database
+  // when the user clicks repeatedly while still feeling responsive.
+  const DEBOUNCE_DELAY = 200;
+
   // Track the last known state of each GPIO as reported by the device.  We
   // update these values whenever a status update arrives from Firebase.
   // When toggling a pin we always derive the new desired value from this
@@ -276,30 +299,63 @@ document.addEventListener('DOMContentLoaded', () => {
           const normalized = val === 1 ? 1 : 0;
           // Update our internal last known state
           currentStates[idx] = normalized;
-          // Update the text label
-          if (stateElements[idx]) {
-            stateElements[idx].textContent = normalized === 1 ? 'ON' : 'OFF';
+          // Initialise desired state on first update if not set yet
+          if (typeof desiredStates[idx] === 'undefined') {
+            desiredStates[idx] = normalized;
           }
-          // Update button class and label based on new value
           const btn = btnElements[idx];
-          if (btn) {
-            // Remove pending class since the status is now updated
-            btn.classList.remove('pending');
-            if (normalized === 1) {
-              btn.classList.remove('off');
-              btn.classList.add('on');
-              btn.textContent = 'ON';
+          const stateEl = stateElements[idx];
+          // Determine if the device's reported state matches the user's desired state
+          const matchesDesired = desiredStates[idx] === normalized;
+          if (btn && stateEl) {
+            if (matchesDesired) {
+              // Clear any debounce timer because we have reached the desired state
+              if (debounceTimers[idx]) {
+                clearTimeout(debounceTimers[idx]);
+                debounceTimers[idx] = null;
+              }
+              // No longer pending
+              pending[idx] = false;
+              // Update button appearance to reflect the actual state
+              btn.classList.remove('pending');
+              if (normalized === 1) {
+                btn.classList.remove('off');
+                btn.classList.add('on');
+                btn.textContent = 'ON';
+              } else {
+                btn.classList.remove('on');
+                btn.classList.add('off');
+                btn.textContent = 'OFF';
+              }
+              // Show the actual state in the label
+              stateEl.textContent = normalized === 1 ? 'ON' : 'OFF';
             } else {
+              // The device state does not yet match the desired state.  Keep the
+              // button in a pending style and reflect the desired value.
+              pending[idx] = true;
               btn.classList.remove('on');
-              btn.classList.add('off');
-              btn.textContent = 'OFF';
+              btn.classList.remove('off');
+              btn.classList.add('pending');
+              btn.textContent = desiredStates[idx] === 1 ? 'ON' : 'OFF';
+              // Show an ellipsis to indicate that the command is in flight
+              stateEl.textContent = '…';
             }
-            // Re‑enable the button now that the status is updated
+            // Always allow further toggles
             btn.disabled = false;
-            pending[idx] = false;
           }
         });
         statusUnsubscribers[idx] = unsubscribe;
+      });
+
+      // Initial desired state and debounce timer setup.  After
+      // subscribing to status updates but before attaching the
+      // click handlers, initialise the desiredStates and debounceTimers
+      // arrays for this session.  Without resetting these on every
+      // login the UI could retain stale desired values from previous
+      // sessions which would cause incorrect toggling behaviour.
+      pins.forEach((pin, idx) => {
+        desiredStates[idx] = currentStates[idx];
+        debounceTimers[idx] = null;
       });
 
       // Start the web heartbeat mechanism now that the user is logged in.
@@ -315,37 +371,38 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btn && !btn.hasAttribute('data-listener-added')) {
           btn.setAttribute('data-listener-added', 'true');
           btn.addEventListener('click', () => {
-            // Prevent multiple toggles while a previous change is pending
-            if (pending[idx]) {
-              return;
-            }
-            // Determine current state from our internal state array rather than the UI.
-            // The UI can become stale if a previous toggle failed or a network delay
-            // prevented a status update.  Using currentStates ensures we toggle
-            // relative to the actual state reported by the device.
-            const currentVal = typeof currentStates[idx] === 'number' ? currentStates[idx] : 0;
-            const newVal = currentVal === 1 ? 0 : 1;
-            // Set pending flag and disable the button until the status update arrives
+            // Determine the desired state based on the last desired state, not the actual state.
+            const currentDesired = typeof desiredStates[idx] === 'number' ? desiredStates[idx] : 0;
+            const newDesired = currentDesired === 1 ? 0 : 1;
+            // Record the user's desired state
+            desiredStates[idx] = newDesired;
+            // Mark this pin as pending until the device reports the same state
             pending[idx] = true;
-            btn.disabled = true;
-            // Show a pending indicator so the user knows the command is being sent.
-            // We don't assume the new state until the ESP32 acknowledges it, but
-            // showing "…" indicates the request is in progress.  Once the
-            // status listener fires, the UI will update accordingly.
-            if (stateElements[idx]) {
-              stateElements[idx].textContent = '…';
+            // Immediately reflect the desired state in the UI.  Show an ellipsis on the
+            // status label and update the button to indicate the requested state.  We
+            // do not disable the button so the user can toggle again while the
+            // command is in flight.
+            const stateEl = stateElements[idx];
+            if (stateEl) {
+              stateEl.textContent = '…';
             }
-            // Optionally update the button label to reflect the requested action
-            // so the user sees what will happen when the command succeeds.
-            btn.textContent = newVal === 1 ? 'ON' : 'OFF';
-            // Apply pending style to the button and remove on/off classes.  This
-            // visually indicates that a command is in flight.
             btn.classList.remove('on');
             btn.classList.remove('off');
             btn.classList.add('pending');
-            // Send the command to the database.  The ESP32 will receive this update
-            // via its stream and update the status accordingly.
-            set(commandRefs[idx], newVal);
+            btn.textContent = newDesired === 1 ? 'ON' : 'OFF';
+            // Cancel any previously scheduled command for this pin
+            if (debounceTimers[idx]) {
+              clearTimeout(debounceTimers[idx]);
+            }
+            // Schedule a new command after the debounce delay.  If the user toggles
+            // again before this timer fires, it will be cancelled and rescheduled.
+            debounceTimers[idx] = setTimeout(() => {
+              const finalVal = desiredStates[idx];
+              // Send the command to Firebase.  We intentionally do not disable the
+              // button here; the status listener will resolve the pending state
+              // when the device acknowledges the change.
+              set(commandRefs[idx], finalVal);
+            }, DEBOUNCE_DELAY);
           });
         }
       });
@@ -360,30 +417,37 @@ document.addEventListener('DOMContentLoaded', () => {
         resetButton.setAttribute('data-listener-added', 'true');
         resetButton.addEventListener('click', (e) => {
           e.preventDefault();
-          // Disable the reset button to prevent repeated clicks
+          // Disable the reset button itself to prevent rapid consecutive resets
           resetButton.disabled = true;
-          // For each pin, send a command to turn it OFF (0)
+          // Iterate through each pin and request an OFF state
           pins.forEach((pin, idx) => {
-            // Mark this pin as pending and disable its button if not already
+            // Update the desired state to OFF
+            desiredStates[idx] = 0;
             pending[idx] = true;
+            // Cancel any pending debounce timer so the reset command is sent immediately
+            if (debounceTimers[idx]) {
+              clearTimeout(debounceTimers[idx]);
+              debounceTimers[idx] = null;
+            }
             const btn = btnElements[idx];
+            const stateEl = stateElements[idx];
+            if (stateEl) {
+              stateEl.textContent = '…';
+            }
             if (btn) {
-              btn.disabled = true;
-              // Show pending indicator and update label to OFF
-              if (stateElements[idx]) {
-                stateElements[idx].textContent = '…';
-              }
-              btn.textContent = 'OFF';
+              // Reflect the reset request in the UI by showing pending OFF
               btn.classList.remove('on');
               btn.classList.remove('off');
               btn.classList.add('pending');
+              btn.textContent = 'OFF';
+              // Keep buttons enabled so the user can still interact while waiting
+              btn.disabled = false;
             }
-            // Send the OFF command to Firebase
+            // Immediately write the OFF command to Firebase
             set(commandRefs[idx], 0);
           });
           // Re-enable the reset button after a short delay.  The status
-          // listeners will update the UI when the ESP32 acknowledges the
-          // changes, but we allow the user to click again if necessary.
+          // listeners will resolve the pending states and update the UI.
           setTimeout(() => {
             resetButton.disabled = false;
           }, 2000);
