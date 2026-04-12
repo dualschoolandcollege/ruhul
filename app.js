@@ -105,6 +105,116 @@ document.addEventListener('DOMContentLoaded', () => {
   // improving listener efficiency by removing unnecessary listeners【396260281090169†L1640-L1656】.
   let statusUnsubscribers = [];
 
+  // --------------------------------------------------------------
+  // Heartbeat support
+  //
+  // To prevent the Firebase Realtime Database connection from going
+  // idle, we send a small heartbeat value from the web app to the
+  // database on a regular interval.  The ESP32 subscribes to this
+  // path (see firebase-web-app-gpio-control-code-improved.ino) to
+  // keep the underlying TCP/WebSocket connection active even when no
+  // GPIO commands are exchanged.  Conversely, the web app listens
+  // for updates on the device's heartbeat status path so that it can
+  // also receive periodic updates and keep its connection alive.
+  // These functions manage starting and stopping the heartbeat
+  // transmissions and subscriptions based on authentication state.
+
+  // Holds the interval ID for the outgoing heartbeat timer.  When
+  // non-null, a periodic heartbeat is active.
+  let heartbeatTimer = null;
+  // Holds the unsubscribe function for the device heartbeat listener.
+  let deviceHeartbeatUnsub = null;
+
+  /**
+   * Write a timestamp to the /board1/webHeartbeat/<uid> path.  We use
+   * Date.now() as the timestamp.  Errors are logged to the console but
+   * otherwise ignored because the next interval will retry.  This
+   * function is called both on a timer and immediately when the
+   * heartbeat starts to ensure at least one write occurs after
+   * authentication.
+   *
+   * @param {string} uid The Firebase UID of the authenticated user.
+   */
+  function sendHeartbeat(uid) {
+    const hbRef = ref(database, `board1/webHeartbeat/${uid}`);
+    set(hbRef, Date.now()).catch((err) => {
+      console.error('Error sending web heartbeat:', err);
+    });
+  }
+
+  /**
+   * Start sending periodic heartbeat messages.  If an existing
+   * heartbeat timer is running, it will be cleared before starting a
+   * new one.  A heartbeat is sent immediately upon starting, then
+   * every three minutes.  The interval is kept intentionally shorter
+   * than the device's heartbeat interval (5 minutes) to ensure
+   * overlapping activity from both sides.  See
+   * firebase-web-app-gpio-control-code-improved.ino for the device
+   * counterpart.
+   *
+   * @param {string} uid The Firebase UID of the authenticated user.
+   */
+  function startHeartbeat(uid) {
+    // Stop any existing heartbeat to avoid duplicates
+    stopHeartbeat();
+    // Immediately send a heartbeat so the connection stays alive
+    sendHeartbeat(uid);
+    // Schedule periodic heartbeats every 3 minutes (180000 ms)
+    heartbeatTimer = setInterval(() => {
+      sendHeartbeat(uid);
+    }, 180000);
+  }
+
+  /**
+   * Stop sending heartbeat messages by clearing the interval.  This is
+   * called when the user logs out or becomes unauthorized.  Clearing
+   * the timer prevents the web app from writing to the database
+   * unexpectedly when no one is logged in.
+   */
+  function stopHeartbeat() {
+    if (heartbeatTimer !== null) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
+  /**
+   * Subscribe to the device's heartbeat status path.  The ESP32 writes
+   * its own heartbeat to /board1/status/heartbeat every few minutes.
+   * By listening on this path the web app receives a steady stream of
+   * updates even when no GPIO changes occur.  This keeps the web
+   * connection alive.  The callback is intentionally left minimal
+   * since the data is not used directly; however, you could update
+   * UI elements or logs here if desired.
+   */
+  function attachDeviceHeartbeat() {
+    // Detach any existing listener before attaching a new one
+    detachDeviceHeartbeat();
+    const hbStatusRef = ref(database, 'board1/status/heartbeat');
+    deviceHeartbeatUnsub = onValue(hbStatusRef, (snap) => {
+      // The snapshot value is just a timestamp.  We could display it
+      // somewhere in the UI if desired, but the primary purpose is to
+      // ensure Firebase keeps the socket open.  Uncomment to log:
+      // console.log('Device heartbeat received:', snap.val());
+    });
+  }
+
+  /**
+   * Detach the device heartbeat listener.  Called when the user logs
+   * out or becomes unauthorized to prevent memory leaks and to stop
+   * receiving updates.
+   */
+  function detachDeviceHeartbeat() {
+    if (deviceHeartbeatUnsub) {
+      try {
+        deviceHeartbeatUnsub();
+      } catch (err) {
+        console.warn('Error detaching device heartbeat listener', err);
+      }
+      deviceHeartbeatUnsub = null;
+    }
+  }
+
   // Populate arrays based on the number of pins
   pins.forEach((pin, idx) => {
     const index = idx + 1;
@@ -191,6 +301,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         statusUnsubscribers[idx] = unsubscribe;
       });
+
+      // Start the web heartbeat mechanism now that the user is logged in.
+      // Send periodic heartbeats to /board1/webHeartbeat/<uid> and listen
+      // for device heartbeat updates to keep the Firebase connection
+      // active even when no GPIO commands are sent.  We use the
+      // authenticated user's UID so each client writes to its own path.
+      startHeartbeat(user.uid);
+      attachDeviceHeartbeat();
 
       // Attach toggle event listener to each button. Use once to avoid duplicate listeners
       btnElements.forEach((btn, idx) => {
@@ -295,6 +413,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         statusUnsubscribers = [];
       }
+
+      // Stop sending and receiving heartbeat messages when not logged in or unauthorized.
+      stopHeartbeat();
+      detachDeviceHeartbeat();
     }
   };
 
