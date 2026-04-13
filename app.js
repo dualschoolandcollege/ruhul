@@ -110,6 +110,17 @@ document.addEventListener('DOMContentLoaded', () => {
   // when the user clicks repeatedly while still feeling responsive.
   const DEBOUNCE_DELAY = 200;
 
+  // Retry timers and counts for each GPIO.  If the device does not
+  // report the desired state within a certain time after a command
+  // is sent, we will retry sending the command to improve
+  // reliability.  Without retries, occasional lost messages can leave
+  // the UI and the device out of sync.  See scheduleRetry() below for
+  // implementation.
+  const retryTimers = [];
+  const retryCounts = [];
+  const RETRY_INTERVAL = 2000; // 2 seconds between retries
+  const MAX_RETRIES = 3;
+
   // Track the last known state of each GPIO as reported by the device.  We
   // update these values whenever a status update arrives from Firebase.
   // When toggling a pin we always derive the new desired value from this
@@ -147,6 +158,52 @@ document.addEventListener('DOMContentLoaded', () => {
   let heartbeatTimer = null;
   // Holds the unsubscribe function for the device heartbeat listener.
   let deviceHeartbeatUnsub = null;
+
+  /**
+   * Schedule retry attempts for a given pin.  After a command is sent, we
+   * wait RETRY_INTERVAL milliseconds and check whether the device has
+   * reached the desired state.  If not, we re‑send the command and
+   * schedule another check.  Retries stop when the desired state
+   * matches the current state or when MAX_RETRIES attempts have been
+   * made.  Clearing the corresponding retry timer when a status
+   * update arrives prevents unnecessary retries.
+   *
+   * @param {number} index Index of the pin in the pins array
+   */
+  function scheduleRetry(index) {
+    // Reset retry count and clear any existing retry timer
+    if (retryTimers[index]) {
+      clearTimeout(retryTimers[index]);
+      retryTimers[index] = null;
+    }
+    retryCounts[index] = 0;
+    const attemptRetry = () => {
+      // If the device state has caught up with the desired state, stop
+      if (currentStates[index] === desiredStates[index]) {
+        if (retryTimers[index]) {
+          clearTimeout(retryTimers[index]);
+          retryTimers[index] = null;
+        }
+        return;
+      }
+      // If we've exceeded the max retries, stop attempting
+      if (retryCounts[index] >= MAX_RETRIES) {
+        if (retryTimers[index]) {
+          clearTimeout(retryTimers[index]);
+          retryTimers[index] = null;
+        }
+        console.warn(`Retry limit reached for GPIO ${pins[index]}`);
+        return;
+      }
+      // Re-send the command for the current desired state
+      retryCounts[index]++;
+      set(commandRefs[index], desiredStates[index]);
+      // Schedule the next retry
+      retryTimers[index] = setTimeout(attemptRetry, RETRY_INTERVAL);
+    };
+    // Start the first retry after RETRY_INTERVAL
+    retryTimers[index] = setTimeout(attemptRetry, RETRY_INTERVAL);
+  }
 
   /**
    * Write a timestamp to the /board1/webHeartbeat/<uid> path.  We use
@@ -314,6 +371,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 clearTimeout(debounceTimers[idx]);
                 debounceTimers[idx] = null;
               }
+              // Clear any retry timer because the device state now matches
+              if (retryTimers[idx]) {
+                clearTimeout(retryTimers[idx]);
+                retryTimers[idx] = null;
+              }
               // No longer pending
               pending[idx] = false;
               // Update button appearance to reflect the actual state
@@ -339,6 +401,13 @@ document.addEventListener('DOMContentLoaded', () => {
               btn.textContent = desiredStates[idx] === 1 ? 'ON' : 'OFF';
               // Show an ellipsis to indicate that the command is in flight
               stateEl.textContent = '…';
+              // If no retry has been scheduled for this pin, schedule one now.  This
+              // ensures that mismatches caused by dropped writes are corrected
+              // automatically.  scheduleRetry() will re‑send the desired state up to
+              // MAX_RETRIES times until the device matches.
+              if (!retryTimers[idx]) {
+                scheduleRetry(idx);
+              }
             }
             // Always allow further toggles
             btn.disabled = false;
@@ -356,6 +425,8 @@ document.addEventListener('DOMContentLoaded', () => {
       pins.forEach((pin, idx) => {
         desiredStates[idx] = currentStates[idx];
         debounceTimers[idx] = null;
+        retryTimers[idx] = null;
+        retryCounts[idx] = 0;
       });
 
       // Start the web heartbeat mechanism now that the user is logged in.
@@ -402,6 +473,10 @@ document.addEventListener('DOMContentLoaded', () => {
               // button here; the status listener will resolve the pending state
               // when the device acknowledges the change.
               set(commandRefs[idx], finalVal);
+              // After sending the command, set up a retry mechanism.  If the
+              // device does not reach the desired state within RETRY_INTERVAL,
+              // scheduleRetry() will re‑send the command up to MAX_RETRIES times.
+              scheduleRetry(idx);
             }, DEBOUNCE_DELAY);
           });
         }
@@ -445,6 +520,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             // Immediately write the OFF command to Firebase
             set(commandRefs[idx], 0);
+            // Schedule retries in case the state does not update
+            scheduleRetry(idx);
           });
           // Re-enable the reset button after a short delay.  The status
           // listeners will resolve the pending states and update the UI.
@@ -481,6 +558,22 @@ document.addEventListener('DOMContentLoaded', () => {
       // Stop sending and receiving heartbeat messages when not logged in or unauthorized.
       stopHeartbeat();
       detachDeviceHeartbeat();
+
+      // Clear any pending timers (debounce and retry) and reset desired state arrays
+      pins.forEach((pin, idx) => {
+        if (debounceTimers[idx]) {
+          clearTimeout(debounceTimers[idx]);
+          debounceTimers[idx] = null;
+        }
+        if (retryTimers[idx]) {
+          clearTimeout(retryTimers[idx]);
+          retryTimers[idx] = null;
+        }
+        desiredStates[idx] = 0;
+        currentStates[idx] = 0;
+        pending[idx] = false;
+        retryCounts[idx] = 0;
+      });
     }
   };
 
