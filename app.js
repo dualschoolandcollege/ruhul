@@ -87,40 +87,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // status update arrives from Firebase.
   const pending = [];
 
-  // Desired states for each GPIO.  While currentStates reflects the
-  // state reported by the device, desiredStates records what the user
-  // intends each output to be.  When a user clicks rapidly, the
-  // desired state may change multiple times before the ESP32 reports
-  // an update.  We use this array to avoid sending intermediate
-  // commands that will be immediately superseded, improving
-  // responsiveness when toggling quickly.
-  const desiredStates = [];
-
-  // Debounce timers for each GPIO.  When a user clicks a button we
-  // schedule a command to write the desired state after a short
-  // delay.  If another click occurs before the timer fires, the
-  // previous timer is cancelled and a new one is scheduled.  This
-  // coalesces multiple rapid toggles into a single database write.
-  const debounceTimers = [];
-
-  // Interval (in milliseconds) used for debouncing GPIO commands.
-  // Commands triggered by button clicks will be delayed by this
-  // amount.  If another click occurs during the delay, the timer
-  // resets.  A modest value (200ms) prevents spamming the database
-  // when the user clicks repeatedly while still feeling responsive.
-  const DEBOUNCE_DELAY = 200;
-
-  // Retry timers and counts for each GPIO.  If the device does not
-  // report the desired state within a certain time after a command
-  // is sent, we will retry sending the command to improve
-  // reliability.  Without retries, occasional lost messages can leave
-  // the UI and the device out of sync.  See scheduleRetry() below for
-  // implementation.
-  const retryTimers = [];
-  const retryCounts = [];
-  const RETRY_INTERVAL = 2000; // 2 seconds between retries
-  const MAX_RETRIES = 3;
-
   // Track the last known state of each GPIO as reported by the device.  We
   // update these values whenever a status update arrives from Firebase.
   // When toggling a pin we always derive the new desired value from this
@@ -158,52 +124,6 @@ document.addEventListener('DOMContentLoaded', () => {
   let heartbeatTimer = null;
   // Holds the unsubscribe function for the device heartbeat listener.
   let deviceHeartbeatUnsub = null;
-
-  /**
-   * Schedule retry attempts for a given pin.  After a command is sent, we
-   * wait RETRY_INTERVAL milliseconds and check whether the device has
-   * reached the desired state.  If not, we re‑send the command and
-   * schedule another check.  Retries stop when the desired state
-   * matches the current state or when MAX_RETRIES attempts have been
-   * made.  Clearing the corresponding retry timer when a status
-   * update arrives prevents unnecessary retries.
-   *
-   * @param {number} index Index of the pin in the pins array
-   */
-  function scheduleRetry(index) {
-    // Reset retry count and clear any existing retry timer
-    if (retryTimers[index]) {
-      clearTimeout(retryTimers[index]);
-      retryTimers[index] = null;
-    }
-    retryCounts[index] = 0;
-    const attemptRetry = () => {
-      // If the device state has caught up with the desired state, stop
-      if (currentStates[index] === desiredStates[index]) {
-        if (retryTimers[index]) {
-          clearTimeout(retryTimers[index]);
-          retryTimers[index] = null;
-        }
-        return;
-      }
-      // If we've exceeded the max retries, stop attempting
-      if (retryCounts[index] >= MAX_RETRIES) {
-        if (retryTimers[index]) {
-          clearTimeout(retryTimers[index]);
-          retryTimers[index] = null;
-        }
-        console.warn(`Retry limit reached for GPIO ${pins[index]}`);
-        return;
-      }
-      // Re-send the command for the current desired state
-      retryCounts[index]++;
-      set(commandRefs[index], desiredStates[index]);
-      // Schedule the next retry
-      retryTimers[index] = setTimeout(attemptRetry, RETRY_INTERVAL);
-    };
-    // Start the first retry after RETRY_INTERVAL
-    retryTimers[index] = setTimeout(attemptRetry, RETRY_INTERVAL);
-  }
 
   /**
    * Write a timestamp to the /board1/webHeartbeat/<uid> path.  We use
@@ -356,77 +276,30 @@ document.addEventListener('DOMContentLoaded', () => {
           const normalized = val === 1 ? 1 : 0;
           // Update our internal last known state
           currentStates[idx] = normalized;
-          // Initialise desired state on first update if not set yet
-          if (typeof desiredStates[idx] === 'undefined') {
-            desiredStates[idx] = normalized;
+          // Update the text label
+          if (stateElements[idx]) {
+            stateElements[idx].textContent = normalized === 1 ? 'ON' : 'OFF';
           }
+          // Update button class and label based on new value
           const btn = btnElements[idx];
-          const stateEl = stateElements[idx];
-          // Determine if the device's reported state matches the user's desired state
-          const matchesDesired = desiredStates[idx] === normalized;
-          if (btn && stateEl) {
-            if (matchesDesired) {
-              // Clear any debounce timer because we have reached the desired state
-              if (debounceTimers[idx]) {
-                clearTimeout(debounceTimers[idx]);
-                debounceTimers[idx] = null;
-              }
-              // Clear any retry timer because the device state now matches
-              if (retryTimers[idx]) {
-                clearTimeout(retryTimers[idx]);
-                retryTimers[idx] = null;
-              }
-              // No longer pending
-              pending[idx] = false;
-              // Update button appearance to reflect the actual state
-              btn.classList.remove('pending');
-              if (normalized === 1) {
-                btn.classList.remove('off');
-                btn.classList.add('on');
-                btn.textContent = 'ON';
-              } else {
-                btn.classList.remove('on');
-                btn.classList.add('off');
-                btn.textContent = 'OFF';
-              }
-              // Show the actual state in the label
-              stateEl.textContent = normalized === 1 ? 'ON' : 'OFF';
-            } else {
-              // The device state does not yet match the desired state.  Keep the
-              // button in a pending style and reflect the desired value.
-              pending[idx] = true;
-              btn.classList.remove('on');
+          if (btn) {
+            // Remove pending class since the status is now updated
+            btn.classList.remove('pending');
+            if (normalized === 1) {
               btn.classList.remove('off');
-              btn.classList.add('pending');
-              btn.textContent = desiredStates[idx] === 1 ? 'ON' : 'OFF';
-              // Show an ellipsis to indicate that the command is in flight
-              stateEl.textContent = '…';
-              // If no retry has been scheduled for this pin, schedule one now.  This
-              // ensures that mismatches caused by dropped writes are corrected
-              // automatically.  scheduleRetry() will re‑send the desired state up to
-              // MAX_RETRIES times until the device matches.
-              if (!retryTimers[idx]) {
-                scheduleRetry(idx);
-              }
+              btn.classList.add('on');
+              btn.textContent = 'ON';
+            } else {
+              btn.classList.remove('on');
+              btn.classList.add('off');
+              btn.textContent = 'OFF';
             }
-            // Always allow further toggles
+            // Re‑enable the button now that the status is updated
             btn.disabled = false;
+            pending[idx] = false;
           }
         });
         statusUnsubscribers[idx] = unsubscribe;
-      });
-
-      // Initial desired state and debounce timer setup.  After
-      // subscribing to status updates but before attaching the
-      // click handlers, initialise the desiredStates and debounceTimers
-      // arrays for this session.  Without resetting these on every
-      // login the UI could retain stale desired values from previous
-      // sessions which would cause incorrect toggling behaviour.
-      pins.forEach((pin, idx) => {
-        desiredStates[idx] = currentStates[idx];
-        debounceTimers[idx] = null;
-        retryTimers[idx] = null;
-        retryCounts[idx] = 0;
       });
 
       // Start the web heartbeat mechanism now that the user is logged in.
@@ -442,42 +315,37 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btn && !btn.hasAttribute('data-listener-added')) {
           btn.setAttribute('data-listener-added', 'true');
           btn.addEventListener('click', () => {
-            // Determine the desired state based on the last desired state, not the actual state.
-            const currentDesired = typeof desiredStates[idx] === 'number' ? desiredStates[idx] : 0;
-            const newDesired = currentDesired === 1 ? 0 : 1;
-            // Record the user's desired state
-            desiredStates[idx] = newDesired;
-            // Mark this pin as pending until the device reports the same state
-            pending[idx] = true;
-            // Immediately reflect the desired state in the UI.  Show an ellipsis on the
-            // status label and update the button to indicate the requested state.  We
-            // do not disable the button so the user can toggle again while the
-            // command is in flight.
-            const stateEl = stateElements[idx];
-            if (stateEl) {
-              stateEl.textContent = '…';
+            // Prevent multiple toggles while a previous change is pending
+            if (pending[idx]) {
+              return;
             }
+            // Determine current state from our internal state array rather than the UI.
+            // The UI can become stale if a previous toggle failed or a network delay
+            // prevented a status update.  Using currentStates ensures we toggle
+            // relative to the actual state reported by the device.
+            const currentVal = typeof currentStates[idx] === 'number' ? currentStates[idx] : 0;
+            const newVal = currentVal === 1 ? 0 : 1;
+            // Set pending flag and disable the button until the status update arrives
+            pending[idx] = true;
+            btn.disabled = true;
+            // Show a pending indicator so the user knows the command is being sent.
+            // We don't assume the new state until the ESP32 acknowledges it, but
+            // showing "…" indicates the request is in progress.  Once the
+            // status listener fires, the UI will update accordingly.
+            if (stateElements[idx]) {
+              stateElements[idx].textContent = '…';
+            }
+            // Optionally update the button label to reflect the requested action
+            // so the user sees what will happen when the command succeeds.
+            btn.textContent = newVal === 1 ? 'ON' : 'OFF';
+            // Apply pending style to the button and remove on/off classes.  This
+            // visually indicates that a command is in flight.
             btn.classList.remove('on');
             btn.classList.remove('off');
             btn.classList.add('pending');
-            btn.textContent = newDesired === 1 ? 'ON' : 'OFF';
-            // Cancel any previously scheduled command for this pin
-            if (debounceTimers[idx]) {
-              clearTimeout(debounceTimers[idx]);
-            }
-            // Schedule a new command after the debounce delay.  If the user toggles
-            // again before this timer fires, it will be cancelled and rescheduled.
-            debounceTimers[idx] = setTimeout(() => {
-              const finalVal = desiredStates[idx];
-              // Send the command to Firebase.  We intentionally do not disable the
-              // button here; the status listener will resolve the pending state
-              // when the device acknowledges the change.
-              set(commandRefs[idx], finalVal);
-              // After sending the command, set up a retry mechanism.  If the
-              // device does not reach the desired state within RETRY_INTERVAL,
-              // scheduleRetry() will re‑send the command up to MAX_RETRIES times.
-              scheduleRetry(idx);
-            }, DEBOUNCE_DELAY);
+            // Send the command to the database.  The ESP32 will receive this update
+            // via its stream and update the status accordingly.
+            set(commandRefs[idx], newVal);
           });
         }
       });
@@ -492,39 +360,30 @@ document.addEventListener('DOMContentLoaded', () => {
         resetButton.setAttribute('data-listener-added', 'true');
         resetButton.addEventListener('click', (e) => {
           e.preventDefault();
-          // Disable the reset button itself to prevent rapid consecutive resets
+          // Disable the reset button to prevent repeated clicks
           resetButton.disabled = true;
-          // Iterate through each pin and request an OFF state
+          // For each pin, send a command to turn it OFF (0)
           pins.forEach((pin, idx) => {
-            // Update the desired state to OFF
-            desiredStates[idx] = 0;
+            // Mark this pin as pending and disable its button if not already
             pending[idx] = true;
-            // Cancel any pending debounce timer so the reset command is sent immediately
-            if (debounceTimers[idx]) {
-              clearTimeout(debounceTimers[idx]);
-              debounceTimers[idx] = null;
-            }
             const btn = btnElements[idx];
-            const stateEl = stateElements[idx];
-            if (stateEl) {
-              stateEl.textContent = '…';
-            }
             if (btn) {
-              // Reflect the reset request in the UI by showing pending OFF
+              btn.disabled = true;
+              // Show pending indicator and update label to OFF
+              if (stateElements[idx]) {
+                stateElements[idx].textContent = '…';
+              }
+              btn.textContent = 'OFF';
               btn.classList.remove('on');
               btn.classList.remove('off');
               btn.classList.add('pending');
-              btn.textContent = 'OFF';
-              // Keep buttons enabled so the user can still interact while waiting
-              btn.disabled = false;
             }
-            // Immediately write the OFF command to Firebase
+            // Send the OFF command to Firebase
             set(commandRefs[idx], 0);
-            // Schedule retries in case the state does not update
-            scheduleRetry(idx);
           });
           // Re-enable the reset button after a short delay.  The status
-          // listeners will resolve the pending states and update the UI.
+          // listeners will update the UI when the ESP32 acknowledges the
+          // changes, but we allow the user to click again if necessary.
           setTimeout(() => {
             resetButton.disabled = false;
           }, 2000);
@@ -558,22 +417,6 @@ document.addEventListener('DOMContentLoaded', () => {
       // Stop sending and receiving heartbeat messages when not logged in or unauthorized.
       stopHeartbeat();
       detachDeviceHeartbeat();
-
-      // Clear any pending timers (debounce and retry) and reset desired state arrays
-      pins.forEach((pin, idx) => {
-        if (debounceTimers[idx]) {
-          clearTimeout(debounceTimers[idx]);
-          debounceTimers[idx] = null;
-        }
-        if (retryTimers[idx]) {
-          clearTimeout(retryTimers[idx]);
-          retryTimers[idx] = null;
-        }
-        desiredStates[idx] = 0;
-        currentStates[idx] = 0;
-        pending[idx] = false;
-        retryCounts[idx] = 0;
-      });
     }
   };
 
